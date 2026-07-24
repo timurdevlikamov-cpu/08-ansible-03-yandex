@@ -1,0 +1,23 @@
+---
+all:
+  children:
+    clickhouse:
+      hosts:
+        clickhouse-node:
+          ansible_host: 158.160.209.139
+          ansible_user: tdi
+          ansible_ssh_private_key_file: ~/.ssh/id_rsa_yandex
+
+    vector:
+      hosts:
+        vector-node:
+          ansible_host: 158.160.212.104
+          ansible_user: tdi
+          ansible_ssh_private_key_file: ~/.ssh/id_rsa_yandex
+
+    lighthouse:
+      hosts:
+        lighthouse-node:
+          ansible_host: 158.160.220.95
+          ansible_user: tdi
+          ansible_ssh_private_key_file: ~/.ssh/id_rsa_yandex

@@ -1,0 +1,175 @@
+---
+- name: Install Clickhouse
+  hosts: clickhouse
+  become: true
+  handlers:
+    - name: Start clickhouse service
+      ansible.builtin.service:
+        name: clickhouse-server
+        state: restarted
+
+  tasks:
+
+    - name: DEBUG - Check version and file existence
+      ansible.builtin.shell: |
+        echo "Version variable is: {{ clickhouse_version }}"
+        # ls -l /tmp/clickhouse-client_{{ clickhouse_version }}_all.deb
+      register: debug_output
+      changed_when: false
+
+    - name: Show Debug Output
+      ansible.builtin.debug:
+        var: debug_output.stdout_lines
+    - block:
+        - name: Download Clickhouse DEB packages
+          ansible.builtin.get_url:
+            url: "https://packages.clickhouse.com/deb/pool/main/c/{{ item.name }}/{{ item.name }}_{{ clickhouse_version }}_{{ item.arch }}.deb"
+            dest: "/tmp/{{ item.name }}_{{ clickhouse_version }}_{{ item.arch }}.deb"
+            validate_certs: false
+          loop:
+            - {name: 'clickhouse-client', arch: 'all'}
+            - {name: 'clickhouse-server', arch: 'all'}
+            - {name: 'clickhouse-common-static', arch: 'amd64'}
+      rescue:
+        - name: Fallback for common static if needed
+          ansible.builtin.get_url:
+            url: "https://packages.clickhouse.com/deb/pool/main/c/clickhouse-common-static/clickhouse-common-static_{{ clickhouse_version }}_amd64.deb"
+            dest: "/tmp/clickhouse-common-static_{{ clickhouse_version }}_amd64.deb"
+
+    - name: Install clickhouse packages
+      ansible.builtin.apt:
+        deb: "/tmp/{{ item }}"
+      loop:
+        - "clickhouse-common-static_{{ clickhouse_version }}_amd64.deb"
+        - "clickhouse-server_{{ clickhouse_version }}_all.deb"
+        - "clickhouse-client_{{ clickhouse_version }}_all.deb"
+      notify: Start clickhouse service
+
+    - name: Flush handlers
+      meta: flush_handlers
+    - name: Create database
+      ansible.builtin.command: "clickhouse-client -q 'create database logs;'"
+      register: create_db
+      retries: 10
+      delay: 5
+      until: create_db.rc == 0 or create_db.rc == 82
+      failed_when: create_db.rc != 0 and create_db.rc !=82
+      changed_when: create_db.rc == 0
+
+
+- name: Install and Configure Vector
+  hosts: vector
+  become: true
+  handlers:
+    - name: Restart vector
+      ###ansible.builtin.shell: "{{ vector_install_dir }}/bin/vector --config {{ vector_config_path }} &"
+      ansible.builtin.shell: "nohup {{ vector_install_dir }}/bin/vector --config {{ vector_config_path }} > /tmp/vector.log 2>&1 &"
+
+  tasks:
+    - name: Create vector directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ vector_install_dir }}"
+        - "{{ vector_config_path | dirname }}"
+
+    - name: Download and Unarchive Vector
+      ansible.builtin.unarchive:
+        src: "{{ vector_archive_url }}"
+        # dest: "{{ vector_install_dir }}"
+        dest: "/root/vector"
+        remote_src: true
+
+    - name: Fix Vector directory
+      ansible.builtin.shell: |
+        SUBDIR=$(find /root/vector -maxdepth 1 -type d -name "vector-x86_64*" | head -n 1)
+        if [ ! -z "$SUBDIR" ] && [ "$SUBDIR" != "/root/vector" ]; then
+          cp -r "$SUBDIR"/* /root/vector/
+          rm -rf "$SUBDIR"
+        fi
+      args:
+        creates: "{{ vector_install_dir }}/bin/vector"
+
+    - name: DEBUG - List files after unarchive
+      ansible.builtin.command: "find {{ vector_install_dir }} -name vector"
+      register: find_vector
+      changed_when: false
+
+    - name: Show where vector is
+      ansible.builtin.debug:
+        var: find_vector.stdout_lines
+
+    - name: Deploy Vector configuration
+      ansible.builtin.template:
+        src: templates/vector.yaml.j2
+        dest: "{{ vector_config_path }}"
+        mode: '0644'
+      notify: Restart vector
+
+    - name: Verify vector binary exists
+      ansible.builtin.stat:
+        path: "{{ vector_install_dir }}/bin/vector"
+      register: vector_bin
+
+    - name: Fail if vector binary not found
+      ansible.builtin.fail:
+        msg: "Vector binary was not extracted correctly!"
+      when: not vector_bin.stat.exists
+
+- name: Install and Configure LightHouse
+  hosts: lighthouse
+  become: true
+  handlers:
+    - name: Restart Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
+
+  tasks:
+    - name: Install Nginx
+      ansible.builtin.apt:
+        name: 
+          - nginx
+          - unzip
+        state: present
+        update_cache: true
+
+    - name: Create Lighthouse directory
+      ansible.builtin.file:
+        path: "{{ lighthouse_dest_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Download and Unarchive LightHouse
+      ansible.builtin.unarchive:
+        src: "{{ lighthouse_src_url }}"
+        dest: "/tmp"
+        remote_src: true
+
+    - name: Move LightHouse files to web directory
+      ansible.builtin.shell:
+        cp -r /tmp/lighthouse-master/* {{ lighthouse_dest_dir }}/
+      args:
+        creates: "{{ lighthouse_dest_dir }}/index.html"
+
+    - name: Deploy Nginx configuration for LightHouse
+      ansible.builtin.template:
+        src: templates/nginx_lighthouse.j2
+        dest: "{{ nginx_config_path }}"
+        mode: '0644'
+      notify: Restart Nginx
+
+    - name: Enable LightHouse site in Nginx
+      ansible.builtin.file:
+        src: "{{ nginx_config_path }}"
+        dest: "/etc/nginx/sites-enabled/lighthouse"
+        state: link
+      notify: Restart Nginx
+
+    - name: Remove default nginx config
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Restart Nginx
