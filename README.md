@@ -16,7 +16,16 @@
 
 ### Запуск
 Для запуска всего playbook целиком используйте команду:
-   ```bash
-   ansible-playbook -i inventory/prod.yml site.yml --diff```
+```
+bash
+   ansible-playbook -i inventory/prod.yml site.yml --check --diff
+```
 
 ## 🛠 Описание Playbooks
+### 1. Install Clickhouse
+Цель: Установка сервера и клиента ClickHouse заданной версии.
+Задачи:
+Проверка наличия файлов и версии.
+Скачивание необходимых .deb пакетов (common-static, server, client).
+Установка пакетов через apt.
+Создание базы данных logs.
